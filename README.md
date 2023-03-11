@@ -45,6 +45,10 @@ This repo is for people who have basic knowledge of stable diffusion and Python.
 5. Output frames are named `<save_dir>/converted_%06d.png`, use ffmpeg to create a video from them
 6. Denoise strength and weight $w_t$ schedule can be changed in `ofgen.py`
 
+# Discussion
+QQ群: 164153710\
+Discord https://discord.gg/Ak8APNy4vb
+
 # Known issues and future work
 1. No A1111 stable-diffusion-webui plugin which makes this repo a mere experiment, more work is required to bring this to the general public
 2. We use Farneback for optical flow calculation, this can be improved with other newer optical flow algorithm
