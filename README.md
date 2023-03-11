@@ -19,7 +19,7 @@ MathJax.Hub.Queue(function() {
 
 # Showcase
 Source https://www.youtube.com/watch?v=eroDb6bRSKA
-![Showcase](output_v2023-03-11.mp4.gif)
+![Showcase](output_v2023-03-11.mp4.gif) \
 Left - Img2img unguided \
 Middle - Original MMD \
 Right - Guided \
