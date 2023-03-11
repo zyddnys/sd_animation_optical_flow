@@ -1,0 +1,5 @@
+__pycache__
+exp*
+*.mp4
+selected_tags.csv
+model.onnx
