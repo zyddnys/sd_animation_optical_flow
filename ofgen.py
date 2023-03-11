@@ -55,7 +55,7 @@ def unsharp(img) :
     unsharp_image = cv2.addWeighted(img, 1.12, gaussian_3, -0.12, 0)
     return unsharp_image
 
-def img2img(model, model_tagger: Tagger, source_np_bgr_u8, denoise_strength, target_np_bgr_u8, *args, **kwargs) :
+def img2img(model, model_tagger: Tagger, source_np_bgr_u8: np.ndarray, denoise_strength: float, target_np_bgr_u8: np.ndarray, *args, **kwargs) :
     blacklist = set()
     tags = model_tagger.label_cv2_bgr(source_np_bgr_u8)
     pos_prompt = ','.join([x for x in tags.keys() if x not in blacklist]).replace('_', ' ')
@@ -69,7 +69,7 @@ def img2img(model, model_tagger: Tagger, source_np_bgr_u8, denoise_strength, tar
         target_img = target_img.float() / 127.5 - 1.
     else :
         target_img = None
-    with torch.autocast(enabled=True, device_type = 'cuda') :
+    with torch.autocast(enabled = True, device_type = 'cuda') :
         img2 = model.img2img(
             img_torch,
             pos_prompt,
@@ -98,7 +98,7 @@ def run_exp(model, model_tagger, video: str, save_dir: str, denoise_strength: fl
             continue
         if not ret :
             break
-        frame = cv2.resize(frame, (512, 768), interpolation=cv2.INTER_AREA)
+        #frame = cv2.resize(frame, (512, 768), interpolation=cv2.INTER_AREA)
         mean_dist = 0
         if last_frame is not None :
             flow, dist = of_calc(last_frame, frame, 99)
@@ -123,7 +123,7 @@ def run_exp(model, model_tagger, video: str, save_dir: str, denoise_strength: fl
 def guidance_schedule(denoise_percentage, aux: dict) -> float | np.ndarray :
     denoise_strength = aux['denoise_strength']
     dist = aux['dist_mat']
-    thres = 1.5
+    thres = 1.5 # 1.5 pixels away
     weights = np.ones((dist.shape[0], dist.shape[1]), dtype = np.float32)
     if denoise_percentage < 0.8 :
         weights *= 0.6
@@ -135,7 +135,7 @@ def guidance_schedule(denoise_percentage, aux: dict) -> float | np.ndarray :
 def main(video: str, save_dir: str) :
     model = create_model('guided_ldm_v15.yaml').cuda()
     hack_everything()
-    load_ldm_sd(model, '../stable-diffusion-webui/models/Stable-diffusion/ACertainModel.ckpt')
+    load_ldm_sd(model, 'ACertainModel.ckpt')
     tagger = Tagger()
     run_exp(model, tagger, video = video, save_dir = save_dir, denoise_strength = 0.4, guidance_schedule_func = guidance_schedule)
 

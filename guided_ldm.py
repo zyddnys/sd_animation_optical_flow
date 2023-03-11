@@ -83,7 +83,7 @@ class GuidedDDIMSample(DDIMSampler) :
         # current prediction for x_0
         pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
 
-        # merge pred_x0
+        # blend pred_x0
         if guidance is not None :
             if isinstance(guidance_strength, float) :
                 pred_x0 = pred_x0 * (1 - guidance_strength) + guidance * guidance_strength
@@ -144,11 +144,11 @@ class GuidedLDM(LatentDiffusion):
         img: torch.Tensor, 
         c_text: str, 
         uc_text: str, 
-        denoising_strength: float = 0.05, 
+        denoising_strength: float = 0.3, 
         ddim_steps = 50, 
         target_img: torch.Tensor = None,
-        guidance_schedule_func=lambda x: 0.1,
-        guidance_schedule_func_aux={},
+        guidance_schedule_func = lambda x: 0.1,
+        guidance_schedule_func_aux = {},
         **kwargs) -> torch.Tensor :
         ddim_sampler = GuidedDDIMSample(self)
         self.cond_stage_model.cuda()
@@ -187,7 +187,6 @@ class GuidedLDM(LatentDiffusion):
 
         self.first_stage_model.cuda()
         x_samples = self.decode_first_stage(decoded)
-        print(x_samples.shape)
         return torch.clip(x_samples, -1, 1)
 
 import os

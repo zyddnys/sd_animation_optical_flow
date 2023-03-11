@@ -18,6 +18,24 @@ MathJax.Hub.Queue(function() {
 <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.4/MathJax.js?config=TeX-AMS_HTML-full"></script>
 
 # Showcase
+Source https://www.youtube.com/watch?v=eroDb6bRSKA
+![Showcase](output_v2023-03-11.mp4.gif)
+Left - Img2img unguided \
+Middle - Original MMD \
+Right - Guided \
+Created using the following schedule and denoise strength of 0.4
+```python
+def guidance_schedule(denoise_percentage, aux: dict) -> float | np.ndarray :
+    dist = aux['dist_mat']
+    thres = 1.5 # 1.5 pixels away
+    weights = np.ones((dist.shape[0], dist.shape[1]), dtype = np.float32)
+    if denoise_percentage < 0.8 :
+        weights *= 0.6
+    else :
+        weights *= 0.4
+    weights[dist > thres] = 0.1
+    return weights
+```
 
 # Optical flow guided AI animation
 AI generated animation with stable diffusion often suffers from flicking due to the inherent randomness in the generation process and the lack of information between frames. This project intents to solve this issue by guiding image generation process using frame predicted by optical flow.
@@ -43,7 +61,7 @@ This repo is for people who have basic knowledge of stable diffusion and Python.
 2. You need a booru tagger, here I use [wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2)
 3. Get a video to process, resize it to resolution acceptable by stable diffusion (e.g. 512x768)
 4. Run `python ofgen.py --i <video_file> --o <save_dir>`
-5. Output frames are named `<save_dir>/converted_%06d.png`, use ffmpeg to create a video out of them
+5. Output frames are named `<save_dir>/converted_%06d.png`, use ffmpeg to create a video from them
 6. Denoise strength and weight $w_t$ schedule can be changed in `ofgen.py`
 
 # Known issues and future work
