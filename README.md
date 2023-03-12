@@ -55,6 +55,7 @@ Discord https://discord.gg/Ak8APNy4vb
 3. We only use img2img for frame generation due to its simplicity, better result can be achieved using ControlNet and custom character LoRA
 4. Multiple passes can be used for better quality
 5. The predication frame can be created from optical flow from both side, not just in the forward direction
+6. Error from the first frame will accumulate across the entire video
 
 # Credits
 先吹爆一喵 This repo is based on lllyasviel's [ControlNet](https://github.com/lllyasviel/ControlNet) repo, a lot of code are copied from there. 
