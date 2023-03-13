@@ -31,7 +31,7 @@ class GuidedDDIMSample(DDIMSampler) :
     def p_sample_ddim(self, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
                       unconditional_guidance_scale=1., unconditional_conditioning=None,
-                      dynamic_threshold=None,guidance=None,guidance_strength=0):
+                      dynamic_threshold=None,guidance=None,guidance_strength=0,guidance_space='pixel'):
         b, *_, device = *x.shape, x.device
 
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
@@ -85,12 +85,26 @@ class GuidedDDIMSample(DDIMSampler) :
 
         # blend pred_x0
         if guidance is not None :
-            if isinstance(guidance_strength, float) :
-                pred_x0 = pred_x0 * (1 - guidance_strength) + guidance * guidance_strength
-            elif isinstance(guidance_strength, np.ndarray) :
-                guidance_strength = cv2.resize(guidance_strength, (pred_x0.shape[3], pred_x0.shape[2]), cv2.INTER_CUBIC)
-                guidance_strength = torch.from_numpy(guidance_strength).to(pred_x0.dtype).to(pred_x0.device)
-                pred_x0 = pred_x0 * (1 - guidance_strength) + guidance * guidance_strength
+            if guidance_space == 'latent' :
+                if isinstance(guidance_strength, float) :
+                    pred_x0 = pred_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                elif isinstance(guidance_strength, np.ndarray) :
+                    guidance_strength = cv2.resize(guidance_strength, (pred_x0.shape[3], pred_x0.shape[2]), cv2.INTER_CUBIC)
+                    guidance_strength = torch.from_numpy(guidance_strength).to(pred_x0.dtype).to(pred_x0.device)
+                    pred_x0 = pred_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                else :
+                    raise NotImplemented()
+            elif guidance_space == 'pixel' :
+                decoded_x0 = self.model.decode_first_stage(pred_x0)
+                if isinstance(guidance_strength, float) :
+                    decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                elif isinstance(guidance_strength, np.ndarray) :
+                    guidance_strength = torch.from_numpy(guidance_strength).to(decoded_x0.dtype).to(decoded_x0.device)
+                    decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                else :
+                    raise NotImplemented()
+                decoded_x0.clamp_(-1, 1)
+                pred_x0 = self.model.get_first_stage_encoding(self.model.encode_first_stage(decoded_x0))
             else :
                 raise NotImplemented()
 
@@ -108,7 +122,7 @@ class GuidedDDIMSample(DDIMSampler) :
     @torch.no_grad()
     def decode(self, x_latent, cond, t_start, unconditional_guidance_scale=1.0, unconditional_conditioning=None,
                use_original_steps=False, callback=None,
-               guidance=None,guidance_schedule_func=lambda x:0.1,guidance_schedule_func_aux={}):
+               guidance=None,guidance_schedule_func=lambda x:0.1,guidance_schedule_func_aux={},guidance_space='latent'):
 
         timesteps = np.arange(self.ddpm_num_timesteps) if use_original_steps else self.ddim_timesteps
         total_steps = len(timesteps)
@@ -128,7 +142,7 @@ class GuidedDDIMSample(DDIMSampler) :
             x_dec, _ = self.p_sample_ddim(x_dec, cond, ts, index=index, use_original_steps=use_original_steps,
                                           unconditional_guidance_scale=unconditional_guidance_scale,
                                           unconditional_conditioning=unconditional_conditioning,
-                                          guidance=guidance,guidance_strength=gs)
+                                          guidance=guidance,guidance_strength=gs,guidance_space=guidance_space)
             if callback: callback(i)
         return x_dec
     
@@ -147,6 +161,7 @@ class GuidedLDM(LatentDiffusion):
         denoising_strength: float = 0.3, 
         ddim_steps = 50, 
         target_img: torch.Tensor = None,
+        guidance_space = 'latent',
         guidance_schedule_func = lambda x: 0.1,
         guidance_schedule_func_aux = {},
         **kwargs) -> torch.Tensor :
@@ -157,10 +172,11 @@ class GuidedLDM(LatentDiffusion):
         cond = {"c_crossattn": [c_text]}
         uc_cond = {"c_crossattn": [uc_text]}
         init_latent = self.get_first_stage_encoding(self.encode_first_stage(img))
-        if target_img is not None :
-            target_latent = self.get_first_stage_encoding(self.encode_first_stage(target_img))
-        else :
-            target_latent = None
+        if guidance_space == 'latent' :
+            if target_img is not None :
+                target_latent = self.get_first_stage_encoding(self.encode_first_stage(target_img))
+            else :
+                target_latent = None
         self.first_stage_model.cpu()
         self.cond_stage_model.cpu()
         steps = ddim_steps
@@ -181,7 +197,8 @@ class GuidedLDM(LatentDiffusion):
             unconditional_conditioning = uc_cond,
             guidance = target_latent,
             guidance_schedule_func = guidance_schedule_func,
-            guidance_schedule_func_aux = guidance_schedule_func_aux
+            guidance_schedule_func_aux = guidance_schedule_func_aux,
+            guidance_space = guidance_space
             )
         self.model.cpu()
 
