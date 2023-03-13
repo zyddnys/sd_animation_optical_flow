@@ -177,6 +177,8 @@ class GuidedLDM(LatentDiffusion):
                 target_latent = self.get_first_stage_encoding(self.encode_first_stage(target_img))
             else :
                 target_latent = None
+        else :
+            target_latent = target_img
         self.first_stage_model.cpu()
         self.cond_stage_model.cpu()
         steps = ddim_steps
