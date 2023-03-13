@@ -42,13 +42,45 @@ def warp_frame(frame, flow) :
     nextImg = cv2.remap(frame, flow, None, cv2.INTER_CUBIC)
     return nextImg
 
-def of_calc(frame1, frame2, guidance_weight_p) :
-    # optical_flow = cv2.optflow.DualTVL1OpticalFlow_create()
-    # flow = optical_flow.calc(cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY), cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY), None)
-    flow = cv2.calcOpticalFlowFarneback(cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY), cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY), None, 0.5, 5, 15, 3, 5, 1.2, 0)
+def of_calc(frame1, frame2, of_algo) :
+    flow = of_algo.calc(frame1, frame2)
     fx, fy = flow[:,:,0], flow[:,:,1]
     v = np.sqrt(fx*fx+fy*fy)
     return flow, v
+
+class namespace:
+    def __contains__(self,m):
+        return hasattr(self, m)
+
+class RAFT_2 :
+    def __init__(self) -> None:
+        import sys
+        sys.path.append('RAFT/core')
+        from raft import RAFT
+        from utils import flow_viz
+        from utils.utils import InputPadder
+        args = namespace()
+        args.model = 'RAFT/models/raft-things.pth'
+        args.small = False
+        args.mixed_precision = False
+        args.alternate_corr = False
+        self.model = torch.nn.DataParallel(RAFT(args)).cuda()
+        self.model.load_state_dict(torch.load(args.model))
+
+    @torch.no_grad()
+    def calc(self, img1, img2) :
+        img1 = torch.from_numpy(cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float()[None].cuda()
+        img2 = torch.from_numpy(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float()[None].cuda()
+        from utils.utils import InputPadder
+        padder = InputPadder(img1.shape)
+        image1, image2 = padder.pad(img1, img2)
+        flow_low, flow_up = self.model(image1, image2, iters=20, test_mode=True)
+        flo = flow_up[0].permute(1,2,0).cpu().numpy()
+        return flo
+
+def create_of_algo() :
+    model = RAFT_2()
+    return model
 
 def unsharp(img) :
     gaussian_3 = cv2.GaussianBlur(img, (0, 0), 2.0)
@@ -91,6 +123,7 @@ def run_exp(model, model_tagger, video: str, save_dir: str, denoise_strength: fl
     last_converted_frame = None
     frame_pred_ai = None
     ctr = -1
+    of_algo = create_of_algo()
     while True :
         ctr += 1
         ret, frame = video.read()
@@ -101,7 +134,7 @@ def run_exp(model, model_tagger, video: str, save_dir: str, denoise_strength: fl
         #frame = cv2.resize(frame, (512, 768), interpolation=cv2.INTER_AREA)
         mean_dist = 0
         if last_frame is not None :
-            flow, dist = of_calc(last_frame, frame, 99)
+            flow, dist = of_calc(last_frame, frame, of_algo)
             mean_dist = np.mean(dist)
             print('mean_dist', mean_dist)
             frame_pred_ai = unsharp(warp_frame(last_converted_frame, flow))
@@ -119,6 +152,7 @@ def run_exp(model, model_tagger, video: str, save_dir: str, denoise_strength: fl
         last_frame = frame
         last_converted_frame = img2_np
     video.release()
+
 
 def guidance_schedule(denoise_percentage, aux: dict) -> float | np.ndarray :
     denoise_strength = aux['denoise_strength']

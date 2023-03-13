@@ -1,6 +1,6 @@
 # Showcase
 Source https://www.youtube.com/watch?v=eroDb6bRSKA
-![Showcase](output_v2023-03-11.mp4.gif) \
+![Showcase](showcase/output_v2023-03-12.mp4.gif) \
 Left - Img2img unguided \
 Middle - Original MMD \
 Right - Guided \
@@ -8,13 +8,13 @@ Created using the following schedule and denoise strength of 0.4
 ```python
 def guidance_schedule(denoise_percentage, aux: dict) -> float | np.ndarray :
     dist = aux['dist_mat']
-    thres = 1.5 # 1.5 pixels away
+    thres = 8 # 8 pixels away
     weights = np.ones((dist.shape[0], dist.shape[1]), dtype = np.float32)
     if denoise_percentage < 0.8 :
-        weights *= 0.6
+        weights *= 0.7
     else :
-        weights *= 0.4
-    weights[dist > thres] = 0.1
+        weights *= 0.5
+    weights[dist > thres] = 0.05
     return weights
 ```
 
@@ -40,6 +40,7 @@ $w_t$ is a 2D array in our implementation, we use a simple heuristic that a pixe
 This repo is for people who have basic knowledge of stable diffusion and Python.
 1. You need a base model, here I use [ACertainModel](https://huggingface.co/JosephusCheung/ACertainModel)
 2. You need a booru tagger, here I use [wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2)
+3. You need [RAFT models](https://github.com/princeton-vl/RAFT)
 3. Get a video to process, resize it to resolution acceptable by stable diffusion (e.g. 512x768)
 4. Run `python ofgen.py --i <video_file> --o <save_dir>`
 5. Output frames are named `<save_dir>/converted_%06d.png`, use ffmpeg to create a video from them
@@ -51,11 +52,12 @@ Discord https://discord.gg/Ak8APNy4vb
 
 # Known issues and future work
 1. No A1111 stable-diffusion-webui plugin which makes this repo a mere experiment, more work is required to bring this to the general public
-2. We use Farneback for optical flow calculation, this can be improved with other newer optical flow algorithm
+2. <s>We use Farneback for optical flow calculation, this can be improved with other newer optical flow algorithm</s> We use [RAFT](https://github.com/princeton-vl/RAFT) for optical flow.
 3. We only use img2img for frame generation due to its simplicity, better result can be achieved using ControlNet and custom character LoRA
 4. Multiple passes can be used for better quality
 5. The predication frame can be created from optical flow from both side, not just in the forward direction
 6. Error from the first frame will accumulate across the entire video
 
 # Credits
-先吹爆一喵 This repo is based on lllyasviel's [ControlNet](https://github.com/lllyasviel/ControlNet) repo, a lot of code are copied from there. 
+先吹爆一喵 This repo is based on lllyasviel's [ControlNet](https://github.com/lllyasviel/ControlNet) repo, a lot of code are copied from there. \
+The whole idea turned out to be very similar to [disco-diffusion](https://github.com/alembics/disco-diffusion), so I encourage people to check out their work.
