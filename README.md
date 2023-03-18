@@ -69,6 +69,7 @@ Two issues here:
 1. Generate multiple frames simultaneously instead of one after another, during the denoise process minimize energy term that ensure temporary smoothness across frames
 2. Train a network to remove SD VAE's artifact
 3. Train a control net that use optical flow warped frame as reference to generate next frame, however I don't have any video dataset
+4. SD is not trained to generate intermediate video frames, either we retrain it or we only generate some "key" frames and generate frames in between using optical flow or any other video interpolation method
 
 # Discussion
 QQ群: 164153710\
