@@ -44,10 +44,10 @@ def warp_frame(frame, flow) :
 
 class PDCNetPlus() :
     def __init__(self, ckpt_path = 'pre_trained_models/PDCNet_plus_m.pth.tar') -> None:
-        local_optim_iter = 16
+        local_optim_iter = 14
         global_gocor_arguments = {'optim_iter': 6, 'steplength_reg': 0.1, 'train_label_map': False,
                                     'apply_query_loss': True,
-                                    'reg_kernel_size': 3, 'reg_inter_dim': 14, 'reg_output_dim': 16}
+                                    'reg_kernel_size': 3, 'reg_inter_dim': 16, 'reg_output_dim': 16}
         local_gocor_arguments = {'optim_iter': local_optim_iter, 'steplength_reg': 0.1}
         network = PDCNet_vgg16(global_corr_type='GlobalGOCor', global_gocor_arguments=global_gocor_arguments,
                                     normalize='leakyrelu', same_local_corr_at_all_levels=True,
