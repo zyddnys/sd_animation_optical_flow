@@ -34,41 +34,36 @@ class GuidedDDIMSample(DDIMSampler) :
                       dynamic_threshold=None,guidance=None,guidance_strength=0,guidance_space='pixel'):
         b, *_, device = *x.shape, x.device
 
-        if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-            model_output = self.model.apply_model(x, t, c)
-        else:
-            x_in = torch.cat([x] * 2)
-            t_in = torch.cat([t] * 2)
-            if isinstance(c, dict):
-                assert isinstance(unconditional_conditioning, dict)
-                c_in = dict()
-                for k in c:
-                    if isinstance(c[k], list):
-                        c_in[k] = [torch.cat([
-                            unconditional_conditioning[k][i],
-                            c[k][i]]) for i in range(len(c[k]))]
-                    else:
-                        c_in[k] = torch.cat([
-                                unconditional_conditioning[k],
-                                c[k]])
-            elif isinstance(c, list):
-                c_in = list()
-                assert isinstance(unconditional_conditioning, list)
-                for i in range(len(c)):
-                    c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+        def get_eps(inp) :
+            if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
+                e_t = self.model.apply_model(inp, t, c)
             else:
-                c_in = torch.cat([unconditional_conditioning, c])
-            model_uncond, model_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
-            model_output = model_uncond + unconditional_guidance_scale * (model_t - model_uncond)
-
-        if self.model.parameterization == "v":
-            e_t = self.model.predict_eps_from_z_and_v(x, t, model_output)
-        else:
-            e_t = model_output
-
-        if score_corrector is not None:
-            assert self.model.parameterization == "eps", 'not implemented'
-            e_t = score_corrector.modify_score(self.model, e_t, x, t, c, **corrector_kwargs)
+                x_in = torch.cat([inp] * 2)
+                t_in = torch.cat([t] * 2)
+                if isinstance(c, dict):
+                    assert isinstance(unconditional_conditioning, dict)
+                    c_in = dict()
+                    for k in c:
+                        if isinstance(c[k], list):
+                            c_in[k] = [torch.cat([
+                                unconditional_conditioning[k][i],
+                                c[k][i]]) for i in range(len(c[k]))]
+                        else:
+                            c_in[k] = torch.cat([
+                                    unconditional_conditioning[k],
+                                    c[k]])
+                elif isinstance(c, list):
+                    c_in = list()
+                    assert isinstance(unconditional_conditioning, list)
+                    for i in range(len(c)):
+                        c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+                else:
+                    c_in = torch.cat([unconditional_conditioning, c])
+                model_uncond, model_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
+                e_t = model_uncond + unconditional_guidance_scale * (model_t - model_uncond)
+            return e_t, model_uncond, model_t
+        
+        e_t, *_ = get_eps(x)
 
         alphas = self.model.alphas_cumprod if use_original_steps else self.ddim_alphas
         alphas_prev = self.model.alphas_cumprod_prev if use_original_steps else self.ddim_alphas_prev
@@ -95,16 +90,32 @@ class GuidedDDIMSample(DDIMSampler) :
                 else :
                     raise NotImplemented()
             elif guidance_space == 'pixel' :
-                decoded_x0 = self.model.decode_first_stage(pred_x0)
-                if isinstance(guidance_strength, float) :
-                    decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
-                elif isinstance(guidance_strength, np.ndarray) :
-                    guidance_strength = torch.from_numpy(guidance_strength).to(decoded_x0.dtype).to(decoded_x0.device)
-                    decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
-                else :
-                    raise NotImplemented()
-                decoded_x0.clamp_(-1, 1)
-                pred_x0 = self.model.get_first_stage_encoding(self.model.encode_first_stage(decoded_x0))
+                method = 'noised_blending'
+                if method == 'naive' :
+                    decoded_x0 = self.model.decode_first_stage(pred_x0)
+                    if isinstance(guidance_strength, float) :
+                        decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                    elif isinstance(guidance_strength, np.ndarray) :
+                        guidance_strength = torch.from_numpy(guidance_strength).to(decoded_x0.dtype).to(decoded_x0.device)
+                        decoded_x0 = decoded_x0 * (1 - guidance_strength) + guidance * guidance_strength
+                    else :
+                        raise NotImplemented()
+                    decoded_x0.clamp_(-1, 1)
+                    pred_x0 = self.model.get_first_stage_encoding(self.model.encode_first_stage(decoded_x0))
+                elif method == 'noised_blending' :
+                    guide_latent = self.model.get_first_stage_encoding(self.model.encode_first_stage(guidance))
+                    guide_latent_noised = self.stochastic_encode(guide_latent, torch.tensor([index + 1] * int(x.shape[0])).cuda(), noise=torch.randn_like(x))
+                    e_t_guidance, *_ = get_eps(guide_latent_noised)
+                    pred_x0_guidance = (guide_latent_noised - sqrt_one_minus_at * e_t_guidance) / a_t.sqrt()
+                    decoded_x0_guidance = self.model.decode_first_stage(pred_x0_guidance)
+                    if isinstance(guidance_strength, float) :
+                        decoded_x0 = decoded_x0 * (1 - guidance_strength) + decoded_x0_guidance * guidance_strength
+                    elif isinstance(guidance_strength, np.ndarray) :
+                        guidance_strength2 = torch.from_numpy(guidance_strength).to(decoded_x0.dtype).to(decoded_x0.device)
+                        decoded_x0 = decoded_x0 * (1 - guidance_strength2) + decoded_x0_guidance * guidance_strength2
+                    else :
+                        raise NotImplemented()
+                    pred_x0 = self.model.get_first_stage_encoding(self.model.encode_first_stage(decoded_x0))
             else :
                 raise NotImplemented()
 

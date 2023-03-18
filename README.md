@@ -40,11 +40,35 @@ $w_t$ is a 2D array in our implementation, we use a simple heuristic that a pixe
 This repo is for people who have basic knowledge of stable diffusion and Python.
 1. You need a base model, here I use [ACertainModel](https://huggingface.co/JosephusCheung/ACertainModel)
 2. You need a booru tagger, here I use [wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-swinv2-tagger-v2)
-3. You need [RAFT models](https://github.com/princeton-vl/RAFT)
+3. You need [PDCNet+](https://github.com/PruneTruong/DenseMatching), it can generate optical flow and confidence
 3. Get a video to process, resize it to resolution acceptable by stable diffusion (e.g. 512x768)
 4. Run `python ofgen.py --i <video_file> --o <save_dir>`
 5. Output frames are named `<save_dir>/converted_%06d.png`, use ffmpeg to create a video from them
 6. Denoise strength and weight $w_t$ schedule can be changed in `ofgen.py`
+
+# Other attempts
+
+## 1
+Fixing noise (seed) helps
+
+# Failed attempts
+
+## 1
+Guiding images during the denoising process always leads to blurry image, I suspect this is due to the Unet not knowing what should it do, the Unet trying to generate one image but the guidance tries to lead it to another image
+
+## 2
+Code is in [ofgen_pixel_inpaint.py](ofgen_pixel_inpaint.py) \
+So I tried feeding optical warped image. Pixels produced by optical flow with high confidence are kept and the low confidence pixels are masked for inpainting. \
+Two issues here: 
+1. Pixels warped from optical flow continue to worse despite having high confidence
+![](failed/optical_flow_artifacts.png)
+2. SD's VAE when applied repeatedly (in video it means result from one frame is used to generate the next) leads artifacts
+![](failed/vae_artifact.bmp)
+
+# Ideas pending
+1. Generate multiple frames simultaneously instead of one after another, during the denoise process minimize energy term that ensure temporary smoothness across frames
+2. Train a network to remove SD VAE's artifact
+3. Train a control net that use optical flow warped frame as reference to generate next frame, however I don't have any video dataset
 
 # Discussion
 QQ群: 164153710\
@@ -52,7 +76,7 @@ Discord https://discord.gg/Ak8APNy4vb
 
 # Known issues and future work
 1. No A1111 stable-diffusion-webui plugin which makes this repo a mere experiment, more work is required to bring this to the general public
-2. <s>We use Farneback for optical flow calculation, this can be improved with other newer optical flow algorithm</s> We use [RAFT](https://github.com/princeton-vl/RAFT) for optical flow.
+2. <s>We use Farneback for optical flow calculation, this can be improved with other newer optical flow algorithm</s> We use [PDCNet+](https://github.com/PruneTruong/DenseMatching) for optical flow.
 3. We only use img2img for frame generation due to its simplicity, better result can be achieved using ControlNet and custom character LoRA
 4. Multiple passes can be used for better quality
 5. The predication frame can be created from optical flow from both side, not just in the forward direction
