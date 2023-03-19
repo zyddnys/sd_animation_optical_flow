@@ -162,7 +162,6 @@ class GuidedLDM(LatentDiffusion):
         super().__init__(*args, **kwargs)
         print('Using Guided LDM!!!!!!!!!!!!!!!!!!!!')
 
-
     @torch.no_grad()
     def img2img(
         self,
