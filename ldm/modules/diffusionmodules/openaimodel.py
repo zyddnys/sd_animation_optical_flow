@@ -76,15 +76,18 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None):
+    def forward(self, x, emb, context=None, reference_kv = []):
+        kv_hists = []
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             elif isinstance(layer, SpatialTransformer):
-                x = layer(x, context)
+                idx = 17 - (len(reference_kv[0]) if reference_kv else 16)
+                x, kv_hist = layer(x, context,reference_kv=[(*single_ref_kv.pop(0), idx) for single_ref_kv in reference_kv])
+                kv_hists.extend(kv_hist)
             else:
                 x = layer(x)
-        return x
+        return x, kv_hists
 
 
 class Upsample(nn.Module):
@@ -771,16 +774,20 @@ class UNetModel(nn.Module):
             assert y.shape[0] == x.shape[0]
             emb = emb + self.label_emb(y)
 
+        kv_hists = []
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb, context)
+            h, kv_hists_cur = module(h, emb, context)
+            kv_hists.extend(kv_hists_cur)
             hs.append(h)
-        h = self.middle_block(h, emb, context)
+        h, kv_hists_cur = self.middle_block(h, emb, context)
+        kv_hists.extend(kv_hists_cur)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context)
+            h, kv_hists_cur = module(h, emb, context)
+            kv_hists.extend(kv_hists_cur)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
-            return self.id_predictor(h)
+            return self.id_predictor(h), kv_hists
         else:
-            return self.out(h)
+            return self.out(h), kv_hists

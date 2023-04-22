@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 from einops import rearrange, repeat
-from typing import Optional, Any
+from typing import List, Optional, Any, Tuple
 
 from ldm.modules.diffusionmodules.util import checkpoint
 
@@ -160,7 +160,9 @@ class CrossAttention(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, context=None, mask=None):
+    def forward(self, x, context=None, mask=None,ori_shape=None):
+        if ori_shape is not None :
+            print('ori_shape', ori_shape)
         h = self.heads
 
         q = self.to_q(x)
@@ -187,19 +189,21 @@ class CrossAttention(nn.Module):
             sim.masked_fill_(~mask, max_neg_value)
 
         # attention, what we cannot get enough of
+        print(q.shape, k.shape, v.shape, sim.shape)
         sim = sim.softmax(dim=-1)
 
         out = einsum('b i j, b j d -> b i d', sim, v)
         out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
         return self.to_out(out)
 
-
+ATTENTION_BIAS_CACHE = {}
+import numpy as np
 class MemoryEfficientCrossAttention(nn.Module):
     # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
-        print(f"Setting up {self.__class__.__name__}. Query dim is {query_dim}, context_dim is {context_dim} and using "
-              f"{heads} heads.")
+        # print(f"Setting up {self.__class__.__name__}. Query dim is {query_dim}, context_dim is {context_dim} and using "
+        #       f"{heads} heads.")
         inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
 
@@ -213,11 +217,16 @@ class MemoryEfficientCrossAttention(nn.Module):
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attention_op: Optional[Any] = None
 
-    def forward(self, x, context=None, mask=None):
+    def forward_mfr(self, x, context=None, mask=None,ori_shape=None,ref_kv_hists:List[Tuple[torch.Tensor, torch.Tensor]]=[]): # ref_kv_hist is a list of (k, v, (optionally flow)) from different reference images
+        #print('using MemoryEfficientCrossAttention')
         q = self.to_q(x)
+        is_self_attn = False
+        if context is None :
+            is_self_attn = True
         context = default(context, x)
         k = self.to_k(context)
         v = self.to_v(context)
+        kv_hist = None
 
         b, _, _ = q.shape
         q, k, v = map(
@@ -229,8 +238,80 @@ class MemoryEfficientCrossAttention(nn.Module):
             (q, k, v),
         )
 
+        if is_self_attn :
+            kv_hist = (k, v)
+            attn_entire_reference_image = True
+            ql = q.shape[1]
+            kl = k.shape[1]
+            attn_bias = torch.zeros(ql, kl).type(q.dtype).to(q.device)
+            n, ch, h, w = ori_shape
+            if w > h :
+                ext = int(w / (h / 1.5))
+            else :
+                ext = 1
+            #print('added head', q.shape, k.shape, v.shape, attn_bias.shape, 'ext=',ext)
+            attn_radius = 6
+            attn_w = 4
+            attn_sigma = 0.8
+            sigma_from_h = {
+                96: 1,
+                48: 0.8,
+                24: 0.6,
+                12: 0.4
+            }
+            if ext > 1 :
+                assert ext == 2
+                w //= ext
+                key = (ext, h, w)
+                if key in ATTENTION_BIAS_CACHE :
+                    attn_bias = ATTENTION_BIAS_CACHE[key]
+                else :
+                    # attn_bias.fill_(-100)
+                    # for i in range(h) :
+                    #     # make sure reference image's self attn works within itself
+                    #     for j in range(h) :
+                    #         x = j * 2 + 1
+                    #         y = i * 2 + 1
+                    #         attn_bias[y * w: (y + 1) * w, x * w: (x + 1) * w] = 0
+                    if attn_entire_reference_image :
+                        pass
+                    attn_sigma = sigma_from_h[h]
+                    wblock = attn_w * torch.eye(w).to(q.device).to(q.dtype) # increase weight by attn_w
+                    for j in range(-attn_radius, attn_radius + 1) :
+                        if j == 0 :
+                            continue
+                        dist = np.abs(j)
+                        val = attn_w * np.exp(-dist / attn_sigma)
+                        for k2 in range(w) :
+                            x = k2 + j
+                            y = k2
+                            if x >= 0 and x < w and y >= 0 and y < w :
+                                wblock[y, x] = val
+                    for i in range(h) :
+                        x = 1 + 2 * i
+                        y = x - 1
+                        attn_bias[y * w: (y + 1) * w, x * w: (x + 1) * w] = wblock
+                        for j in range(-attn_radius, attn_radius + 1) : # vertical
+                            if j == 0 :
+                                continue
+                            wblock_offdiag = attn_w * torch.eye(w).to(q.device).to(q.dtype)
+                            for k2 in range(-attn_radius, attn_radius + 1) : # horizontal
+                                dist = np.sqrt(j * j + k2 * k2)
+                                val = attn_w * np.exp(-dist / attn_sigma)
+                                for l in range(w) : # for all pixels in this horizontal line
+                                    x3 = l + k2
+                                    y3 = l
+                                    if x3 >= 0 and x3 < w and y3 >= 0 and y3 < w :
+                                        wblock_offdiag[y3, x3] = val
+                            x2 = x + 2 * j
+                            y2 = y
+                            if x2 >= 0 and x2 * w < kl :
+                                attn_bias[y2 * w: (y2 + 1) * w, x2 * w: (x2 + 1) * w] = wblock_offdiag
+                    ATTENTION_BIAS_CACHE[key] = attn_bias
+        else :
+            attn_bias = None
         # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=attn_bias, op=self.attention_op)
 
         if exists(mask):
             raise NotImplementedError
@@ -240,8 +321,119 @@ class MemoryEfficientCrossAttention(nn.Module):
             .permute(0, 2, 1, 3)
             .reshape(b, out.shape[1], self.heads * self.dim_head)
         )
-        return self.to_out(out)
+        return self.to_out(out), kv_hist
+    
+    def forward(self, x, context=None, mask=None,ori_shape=None,ref_kv_hists:List[Tuple[torch.Tensor, torch.Tensor]]=[]): # ref_kv_hist is a list of (k, v, (optionally flow)) from different reference images
+        #print('using MemoryEfficientCrossAttention')
+        q = self.to_q(x)
+        is_self_attn = False
+        if context is None :
+            is_self_attn = True
+        context = default(context, x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+        kv_hist = None
 
+        b, _, _ = q.shape
+        q, k, v = map(
+            lambda t: t.unsqueeze(3)
+            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .contiguous(),
+            (q, k, v),
+        )
+        ql = q.size(1)
+        kl = k.size(1)
+
+        attn_bias = None
+        use_attn_bias = False
+        if is_self_attn :
+            nhead = self.heads
+            kv_hist = (k.cpu(), v.cpu())
+            unet_layer = 0
+            if ref_kv_hists :
+                unet_layer = ref_kv_hists[0][2]
+
+            if ref_kv_hists :
+                unet_layer = ref_kv_hists[0][2]
+                #print('using k and v from another image!')
+                k2 = torch.cat([tk for tk, tv, _ in ref_kv_hists], dim = 1).to(q.device)
+                v2 = torch.cat([tv for tk, tv, _ in ref_kv_hists], dim = 1).to(q.device)
+                if k2.shape[0] != q.shape[0] :
+                    # cross attention only applicable for positive image
+                    k[nhead:] = k2
+                    v[nhead:] = v2
+                else :
+                    k = k2
+                    v = v2
+                if use_attn_bias and unet_layer >= 1 and unet_layer <= 13 : # attention on decode at ds=[2,1]
+                    ext = k.size(1) // kl
+                    n, ch, h, w = ori_shape
+                    key = (h, w)
+                    attn_bias = torch.zeros(ql, kl).type(q.dtype).to(q.device)
+                    attn_bias.fill_(-1000)
+                    attn_radius = 8
+                    attn_w = 0
+                    attn_sigma = 0.8
+                    sigma = 2
+                    sigma_from_h = {
+                        96: 10001,
+                        48: 10000.8,
+                        24: 10000.6,
+                        12: 10000.4
+                    }
+                    if key in ATTENTION_BIAS_CACHE :
+                        attn_bias = ATTENTION_BIAS_CACHE[key]
+                    else :
+                        attn_sigma = sigma_from_h[h] * sigma
+                        wblock = attn_w * torch.eye(w).to(q.device).to(q.dtype) # increase weight by attn_w
+                        for j in range(-attn_radius, attn_radius + 1) :
+                            if j == 0 :
+                                continue
+                            dist = np.abs(j)
+                            val = attn_w * np.exp(-dist / attn_sigma)
+                            for k2 in range(w) :
+                                x = k2 + j
+                                y = k2
+                                if x >= 0 and x < w and y >= 0 and y < w :
+                                    wblock[y, x] = val
+                        for i in range(h) :
+                            x = i
+                            y = x
+                            attn_bias[y * w: (y + 1) * w, x * w: (x + 1) * w] = wblock
+                            for j in range(-attn_radius, attn_radius + 1) : # vertical
+                                if j == 0 :
+                                    continue
+                                wblock_offdiag = attn_w * torch.eye(w).to(q.device).to(q.dtype)
+                                for k2 in range(-attn_radius, attn_radius + 1) : # horizontal
+                                    dist = np.sqrt(j * j + k2 * k2)
+                                    val = attn_w * np.exp(-dist / attn_sigma)
+                                    for l in range(w) : # for all pixels in this horizontal line
+                                        x3 = l + k2
+                                        y3 = l
+                                        if x3 >= 0 and x3 < w and y3 >= 0 and y3 < w :
+                                            wblock_offdiag[y3, x3] = val
+                                x2 = x + j
+                                y2 = y
+                                if x2 >= 0 and x2 * w < kl :
+                                    attn_bias[y2 * w: (y2 + 1) * w, x2 * w: (x2 + 1) * w] = wblock_offdiag
+                        if ext > 1 :
+                            attn_bias = torch.concatenate([attn_bias] * ext, dim = 1)
+                        ATTENTION_BIAS_CACHE[key] = attn_bias
+            
+        # actually compute the attention, what we cannot get enough of
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=attn_bias, op=self.attention_op)
+
+        if exists(mask):
+            raise NotImplementedError
+        out = (
+            out.unsqueeze(0)
+            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b, out.shape[1], self.heads * self.dim_head)
+        )
+        return self.to_out(out), kv_hist
 
 class BasicTransformerBlock(nn.Module):
     ATTENTION_MODES = {
@@ -251,6 +443,7 @@ class BasicTransformerBlock(nn.Module):
     def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,
                  disable_self_attn=False):
         super().__init__()
+        XFORMERS_IS_AVAILBLE=True
         attn_mode = "softmax-xformers" if XFORMERS_IS_AVAILBLE else "softmax"
         assert attn_mode in self.ATTENTION_MODES
         attn_cls = self.ATTENTION_MODES[attn_mode]
@@ -265,14 +458,15 @@ class BasicTransformerBlock(nn.Module):
         self.norm3 = nn.LayerNorm(dim)
         self.checkpoint = checkpoint
 
-    def forward(self, x, context=None):
-        return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+    def forward(self, x, context=None,ori_shape=None,ref_kv_hists=[]):
+        return checkpoint(self._forward, (x, context, ori_shape, ref_kv_hists), self.parameters(), self.checkpoint)
 
-    def _forward(self, x, context=None):
-        x = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None) + x
-        x = self.attn2(self.norm2(x), context=context) + x
+    def _forward(self, x, context=None, ori_shape=None,ref_kv_hists=[]):
+        attn1_output, kv_hist1 = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None,ori_shape=ori_shape,ref_kv_hists=ref_kv_hists)
+        x = attn1_output + x # self attn
+        x = self.attn2(self.norm2(x), context=context,ori_shape=ori_shape)[0] + x # cross attn
         x = self.ff(self.norm3(x)) + x
-        return x
+        return x, kv_hist1
 
 
 class SpatialTransformer(nn.Module):
@@ -318,7 +512,7 @@ class SpatialTransformer(nn.Module):
             self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
         self.use_linear = use_linear
 
-    def forward(self, x, context=None):
+    def forward(self, x, context=None,reference_kv=[]):
         # note: if no context is given, cross-attention defaults to self-attention
         if not isinstance(context, list):
             context = [context]
@@ -327,15 +521,18 @@ class SpatialTransformer(nn.Module):
         x = self.norm(x)
         if not self.use_linear:
             x = self.proj_in(x)
+        ori_shape=x.shape
         x = rearrange(x, 'b c h w -> b (h w) c').contiguous()
+        kv_hists = []
         if self.use_linear:
             x = self.proj_in(x)
         for i, block in enumerate(self.transformer_blocks):
-            x = block(x, context=context[i])
+            x, kv_hist = block(x, context=context[i],ori_shape=ori_shape,ref_kv_hists=reference_kv)
+            kv_hists.append(kv_hist)
         if self.use_linear:
             x = self.proj_out(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
         if not self.use_linear:
             x = self.proj_out(x)
-        return x + x_in
+        return x + x_in, kv_hists
 
